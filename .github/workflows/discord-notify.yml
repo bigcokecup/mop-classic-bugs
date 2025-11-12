@@ -1,11 +1,11 @@
-name: Discord Notifications (Issues Only)
+name: Discord Notifications (Issues Only • Styled)
 
 on:
   issues:
     types: [opened, closed]     # 이슈 열림/닫힘
   issue_comment:
     types: [created]            # 이슈에 새 댓글
-  workflow_dispatch: {}         # 수동 테스트용
+  workflow_dispatch: {}         # 수동 테스트
 
 jobs:
   notify:
@@ -26,49 +26,71 @@ jobs:
           set -euo pipefail
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          case "$GITHUB_EVENT_NAME" in
-            issues)
-              action=$(jq -r '.action' "$GITHUB_EVENT_PATH")
-              number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
-              title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
-              url=$(jq -r '.issue.html_url' "$GITHUB_EVENT_PATH")
+          # 기본(디폴트) 값
+          color=8359053
+          embed_title=""
+          embed_desc=""
+          embed_url=""
+          author_name="$ACTOR"
+          author_icon="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+          labels_val=""
+          action_text=""
 
-              # 색상 (opened=파랑, closed=빨강)
-              if [ "$action" = "closed" ]; then color=15158332; else color=3447003; fi
+          if [ "$GITHUB_EVENT_NAME" = "issues" ]; then
+            action=$(jq -r '.action' "$GITHUB_EVENT_PATH")
+            number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+            title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
+            url=$(jq -r '.issue.html_url' "$GITHUB_EVENT_PATH")
+            labels_val=$(jq -r '[.issue.labels[].name] | join(", ") // ""' "$GITHUB_EVENT_PATH")
+            author_name=$(jq -r '.sender.login // ""' "$GITHUB_EVENT_PATH")
+            author_icon=$(jq -r '.sender.avatar_url // ""' "$GITHUB_EVENT_PATH")
 
-              embed_title="📝 Issue #$number: $title"
-              embed_desc="**$ACTOR** $action issue in **$REPO**"
-              embed_url="$url"
-              ;;
-            issue_comment)
-              number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
-              title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
-              url=$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH")
-              body=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")
+            # 색상: opened = 초록 / closed = 빨강
+            if [ "$action" = "closed" ]; then color=15158332; else color=3066993; fi
 
-              # 안전하게 본문 길이 제한 (디스코드 임베드 제한 고려)
-              body=$(printf '%s' "$body" | head -c 700)
+            embed_title="📝 Issue #$number: $title"
+            embed_desc="**$author_name** $action issue in **$REPO**"
+            embed_url="$url"
+            action_text="$action"
 
-              color=9807270
-              embed_title="💬 Comment on #$number: $title"
-              embed_desc="**$ACTOR** commented:\n> ${body}"
-              embed_url="$url"
-              ;;
-            *)
-              color=8359053
-              embed_title="$GITHUB_EVENT_NAME"
-              embed_desc="Unhandled event"
-              embed_url="https://github.com/$REPO"
-              ;;
-          esac
+          elif [ "$GITHUB_EVENT_NAME" = "issue_comment" ]; then
+            number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+            title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
+            url=$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH")
+            body=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")
+            author_name=$(jq -r '.comment.user.login // .sender.login // ""' "$GITHUB_EVENT_PATH")
+            author_icon=$(jq -r '.comment.user.avatar_url // .sender.avatar_url // ""' "$GITHUB_EVENT_PATH")
+
+            # 코멘트 본문은 조금만 (임베드 제한 대비)
+            body=$(printf '%s' "$body" | head -c 700)
+            # 줄바꿈은 인용 형태로
+            body="${body//$'\n'/$'\n> '}"
+
+            color=9807270
+            embed_title="💬 Comment on #$number: $title"
+            embed_desc="> ${body}"
+            embed_url="$url"
+            action_text="commented"
+          fi
+
+          # 라벨 필드 JSON 구성
+          if [ -n "$labels_val" ]; then
+            fields_json='[{"name":"Labels","value":"'"$labels_val"'","inline":true},{"name":"Action","value":"'"$action_text"'","inline":true},{"name":"Run","value":"'"$RUN_URL"'","inline":false}]'
+          else
+            fields_json='[{"name":"Action","value":"'"$action_text"'","inline":true},{"name":"Run","value":"'"$RUN_URL"'","inline":false}]'
+          fi
 
           payload=$(jq -n \
             --arg username "GitHub Issues" \
             --arg t "$embed_title" \
             --arg d "$embed_desc" \
             --arg url "$embed_url" \
+            --arg a "$author_name" \
+            --arg icon "$author_icon" \
             --arg ts "$ts" \
+            --arg footer "$REPO" \
             --argjson color $color \
+            --argjson fields "$fields_json" \
             '{
               username: $username,
               allowed_mentions: { parse: [] },
@@ -78,7 +100,10 @@ jobs:
                   description: $d,
                   url: $url,
                   color: $color,
-                  timestamp: $ts
+                  author: { name: $a, icon_url: $icon },
+                  timestamp: $ts,
+                  footer: { text: $footer },
+                  fields: $fields
                 }
               ]
             }')
