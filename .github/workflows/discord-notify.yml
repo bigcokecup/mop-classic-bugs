@@ -1,4 +1,5 @@
 name: Discord Notifications (push / PR / issues / releases)
+# test trigger
 
 on:
   push:
