@@ -1,144 +1,86 @@
-name: Discord Notifications (push / PR / issues / releases)
-# test trigger
+name: Discord Notifications (Issues Only)
 
 on:
-  push:
-    branches: ["**"]   # 필요한 브랜치만 원하면 수정
-  pull_request:
-    types: [opened, reopened, closed, ready_for_review, converted_to_draft]
   issues:
-    types: [opened, reopened, closed]
-  release:
-    types: [published]
-  workflow_dispatch: {}  # 수동 테스트용
+    types: [opened, closed]     # 이슈 열림/닫힘
+  issue_comment:
+    types: [created]            # 이슈에 새 댓글
+  workflow_dispatch: {}         # 수동 테스트용
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (for commit messages on push)
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-        # 메시지 만들고 디스코드로 전송
-      - name: Build & Send Message to Discord
+      - name: Send Issue/Comment Notification to Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
-          REPO: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
-          SHA: ${{ github.sha }}
-          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-
-          short_sha="${SHA:0:7}"
-          ref_name="${REF#refs/heads/}"
-
-          # 기본 임베드(공통)
-          author_name="$ACTOR"
-          repo_url="https://github.com/$REPO"
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # 이벤트별 분기
           case "$GITHUB_EVENT_NAME" in
-            push)
-              # 최신 커밋 메시지 (여러 커밋일 때도 첫 줄 위주)
-              commit_msg="$(git log -1 --pretty=%B | head -c 4000)"
-              commit_url="$repo_url/commit/$SHA"
-              title="📦 Push to $ref_name"
-              desc="**$ACTOR** pushed to \`$ref_name\` in **$REPO**\n\n**Commit** \`$short_sha\`\n${commit_msg}\n\n[View commit]($commit_url) • [Run]($RUN_URL)"
-              color=5814783
-              ;;
-            pull_request)
-              pr_title=$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")
-              pr_number=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
-              pr_url=$(jq -r '.pull_request.html_url' "$GITHUB_EVENT_PATH")
-              pr_action=$(jq -r '.action' "$GITHUB_EVENT_PATH")
-              merged=$(jq -r '.pull_request.merged' "$GITHUB_EVENT_PATH")
-              title="🔀 PR #$pr_number: $pr_title"
-              if [ "$pr_action" = "closed" ] && [ "$merged" = "true" ]; then
-                status="**Merged**"
-                color=3066993
-              elif [ "$pr_action" = "closed" ]; then
-                status="**Closed**"
-                color=15158332
-              elif [ "$pr_action" = "ready_for_review" ]; then
-                status="**Ready for review**"
-                color=3447003
-              elif [ "$pr_action" = "converted_to_draft" ]; then
-                status="**Draft**"
-                color=9807270
-              else
-                status="**$pr_action**"
-                color=15105570
-              fi
-              desc="**$ACTOR** $status PR in **$REPO**\n[View PR]($pr_url) • [Run]($RUN_URL)"
-              ;;
             issues)
-              is_title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
-              is_number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
-              is_url=$(jq -r '.issue.html_url' "$GITHUB_EVENT_PATH")
-              is_action=$(jq -r '.action' "$GITHUB_EVENT_PATH")
-              title="📝 Issue #$is_number: $is_title"
-              case "$is_action" in
-                opened) color=3447003 ;;
-                reopened) color=15105570 ;;
-                closed) color=15158332 ;;
-                *) color=9807270 ;;
-              esac
-              desc="**$ACTOR** $is_action issue in **$REPO**\n[View Issue]($is_url) • [Run]($RUN_URL)"
+              action=$(jq -r '.action' "$GITHUB_EVENT_PATH")
+              number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+              title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
+              url=$(jq -r '.issue.html_url' "$GITHUB_EVENT_PATH")
+
+              # 색상 (opened=파랑, closed=빨강)
+              if [ "$action" = "closed" ]; then color=15158332; else color=3447003; fi
+
+              embed_title="📝 Issue #$number: $title"
+              embed_desc="**$ACTOR** $action issue in **$REPO**"
+              embed_url="$url"
               ;;
-            release)
-              rel_name=$(jq -r '.release.name // empty' "$GITHUB_EVENT_PATH")
-              rel_tag=$(jq -r '.release.tag_name' "$GITHUB_EVENT_PATH")
-              rel_url=$(jq -r '.release.html_url' "$GITHUB_EVENT_PATH")
-              title="🏷️ Release $rel_tag"
-              [ -n "$rel_name" ] && title="$title — $rel_name"
-              desc="**$ACTOR** published a release in **$REPO**\n[View Release]($rel_url) • [Run]($RUN_URL)"
-              color=15844367
+            issue_comment)
+              number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+              title=$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")
+              url=$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH")
+              body=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")
+
+              # 안전하게 본문 길이 제한 (디스코드 임베드 제한 고려)
+              body=$(printf '%s' "$body" | head -c 700)
+
+              color=9807270
+              embed_title="💬 Comment on #$number: $title"
+              embed_desc="**$ACTOR** commented:\n> ${body}"
+              embed_url="$url"
               ;;
             *)
-              title="📣 $GITHUB_EVENT_NAME"
-              desc="**$ACTOR** triggered **$GITHUB_EVENT_NAME** in **$REPO**\n[Run]($RUN_URL)"
               color=8359053
+              embed_title="$GITHUB_EVENT_NAME"
+              embed_desc="Unhandled event"
+              embed_url="https://github.com/$REPO"
               ;;
           esac
 
-          # 길이 안전장치 (디스코드 제한 고려)
-          maxlen=5900
-          desc_len=${#desc}
-          if [ $desc_len -gt $maxlen ]; then
-            desc="${desc:0:$maxlen}…"
-          fi
-
-          # Discord embeds payload
           payload=$(jq -n \
-            --arg username "GitHub" \
-            --arg t "$title" \
-            --arg d "$desc" \
-            --arg a "$author_name" \
-            --arg url "$repo_url" \
+            --arg username "GitHub Issues" \
+            --arg t "$embed_title" \
+            --arg d "$embed_desc" \
+            --arg url "$embed_url" \
             --arg ts "$ts" \
             --argjson color $color \
             '{
               username: $username,
+              allowed_mentions: { parse: [] },
               embeds: [
                 {
                   title: $t,
                   description: $d,
                   url: $url,
                   color: $color,
-                  author: { name: $a },
                   timestamp: $ts
                 }
               ]
             }')
 
-          curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK" >/dev/null
-
-          echo "Sent $GITHUB_EVENT_NAME notification to Discord."
+          curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
